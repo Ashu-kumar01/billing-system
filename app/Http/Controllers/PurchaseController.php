@@ -85,7 +85,7 @@ class PurchaseController extends Controller
             }
 
             $total = $subtotal - $totalDiscount + $totalTax;
-            $paidAmount = (float) ($data['paid_amount'] ?? 0);
+            $paidAmount = min((float) ($data['paid_amount'] ?? 0), $total);
             $dueAmount = $total - $paidAmount;
 
             $nextNumber = Purchase::count() + 1;

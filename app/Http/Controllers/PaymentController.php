@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\PaymentValidationException;
 use App\Http\Requests\StorePaymentRequest;
 use App\Models\Customer;
 use App\Models\Invoice;
@@ -54,64 +55,62 @@ class PaymentController extends Controller
     {
         $data = $request->validated();
 
-        if (! empty($data['invoice_id'])) {
-            $invoice = Invoice::findOrFail($data['invoice_id']);
+        try {
+            DB::transaction(function () use ($data) {
+                $data['user_id'] = auth()->id();
 
-            if ($data['amount'] > $invoice->due_amount) {
-                return back()->withInput()->withErrors([
-                    'amount' => 'Amount cannot exceed the invoice due amount of ₹'.number_format($invoice->due_amount, 2).'.',
-                ]);
-            }
-        }
+                if (! empty($data['invoice_id'])) {
+                    $invoice = Invoice::lockForUpdate()->findOrFail($data['invoice_id']);
 
-        if (! empty($data['purchase_id'])) {
-            $purchase = Purchase::findOrFail($data['purchase_id']);
+                    if ($data['amount'] > $invoice->due_amount) {
+                        throw new PaymentValidationException(
+                            'amount',
+                            'Amount cannot exceed the invoice due amount of ₹'.number_format($invoice->due_amount, 2).'.'
+                        );
+                    }
 
-            if ($data['amount'] > $purchase->due_amount) {
-                return back()->withInput()->withErrors([
-                    'amount' => 'Amount cannot exceed the purchase due amount of ₹'.number_format($purchase->due_amount, 2).'.',
-                ]);
-            }
-        }
-
-        DB::transaction(function () use ($data) {
-            $data['user_id'] = auth()->id();
-
-            if (! empty($data['invoice_id'])) {
-                $invoice = Invoice::findOrFail($data['invoice_id']);
-                $data['customer_id'] = $data['customer_id'] ?? $invoice->customer_id;
-            }
-
-            if (! empty($data['purchase_id'])) {
-                $purchase = Purchase::findOrFail($data['purchase_id']);
-                $data['supplier_id'] = $data['supplier_id'] ?? $purchase->supplier_id;
-            }
-
-            Payment::create($data);
-
-            if (! empty($data['invoice_id'])) {
-                $invoice = Invoice::lockForUpdate()->findOrFail($data['invoice_id']);
-                $invoice->paid_amount += $data['amount'];
-                $invoice->due_amount = max(0, $invoice->total - $invoice->paid_amount);
-
-                if ($invoice->due_amount <= 0) {
-                    $invoice->payment_status = 'paid';
-                } elseif ($invoice->paid_amount > 0) {
-                    $invoice->payment_status = 'partial';
-                } else {
-                    $invoice->payment_status = 'due';
+                    $data['customer_id'] = $data['customer_id'] ?? $invoice->customer_id;
                 }
 
-                $invoice->save();
-            }
+                if (! empty($data['purchase_id'])) {
+                    $purchase = Purchase::lockForUpdate()->findOrFail($data['purchase_id']);
 
-            if (! empty($data['purchase_id'])) {
-                $purchase = Purchase::lockForUpdate()->findOrFail($data['purchase_id']);
-                $purchase->paid_amount += $data['amount'];
-                $purchase->due_amount = max(0, $purchase->total - $purchase->paid_amount);
-                $purchase->save();
-            }
-        });
+                    if ($data['amount'] > $purchase->due_amount) {
+                        throw new PaymentValidationException(
+                            'amount',
+                            'Amount cannot exceed the purchase due amount of ₹'.number_format($purchase->due_amount, 2).'.'
+                        );
+                    }
+
+                    $data['supplier_id'] = $data['supplier_id'] ?? $purchase->supplier_id;
+                }
+
+                Payment::create($data);
+
+                if (! empty($data['invoice_id'])) {
+                    $invoice->paid_amount += $data['amount'];
+                    $invoice->due_amount = max(0, $invoice->total - $invoice->paid_amount);
+
+                    if ($invoice->due_amount <= 0) {
+                        $invoice->payment_status = 'paid';
+                    } elseif ($invoice->paid_amount > 0) {
+                        $invoice->payment_status = 'partial';
+                    } else {
+                        $invoice->payment_status = 'due';
+                    }
+
+                    $invoice->save();
+                }
+
+                if (! empty($data['purchase_id'])) {
+                    $purchase->paid_amount += $data['amount'];
+                    $purchase->due_amount = max(0, $purchase->total - $purchase->paid_amount);
+                    $purchase->save();
+                }
+            });
+        } catch (PaymentValidationException $e) {
+            return back()->withInput()->withErrors([$e->field => $e->getMessage()]);
+        }
 
         return redirect()->route('payments.index')->with('success', 'Payment recorded successfully.');
     }

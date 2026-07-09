@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Customer;
 use App\Models\Expense;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Payment;
 use App\Models\Product;
 use Illuminate\Support\Carbon;
@@ -33,7 +34,11 @@ class DashboardController extends Controller
 
         $monthlyExpenses = Expense::where('expense_date', '>=', $monthStart)->sum('amount');
         $totalExpenses = Expense::sum('amount');
-        $profit = $totalSales - $totalExpenses;
+        $costOfGoodsSold = (float) InvoiceItem::query()
+            ->join('products', 'products.id', '=', 'invoice_items.product_id')
+            ->selectRaw('SUM(invoice_items.quantity * products.cost_price) as cogs')
+            ->value('cogs') ?? 0;
+        $profit = $totalSales - $costOfGoodsSold - $totalExpenses;
 
         $salesTrend = collect(range(5, 0))->map(function ($i) {
             $month = Carbon::now()->subMonths($i);
@@ -70,7 +75,7 @@ class DashboardController extends Controller
         return view('dashboard', compact(
             'totalSales', 'todaySales', 'monthlySales', 'salesGrowth', 'pendingPayments',
             'paidInvoicesCount', 'totalCustomers', 'totalProducts', 'monthlyExpenses',
-            'totalExpenses', 'profit', 'salesTrend', 'paymentStatusBreakdown', 'weeklySales',
+            'totalExpenses', 'costOfGoodsSold', 'profit', 'salesTrend', 'paymentStatusBreakdown', 'weeklySales',
             'recentInvoices', 'recentCustomers', 'recentPayments', 'lowStockProducts'
         ));
     }

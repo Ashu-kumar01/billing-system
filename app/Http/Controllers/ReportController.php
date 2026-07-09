@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Customer;
 use App\Models\Expense;
 use App\Models\Invoice;
+use App\Models\InvoiceItem;
 use App\Models\Purchase;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -86,7 +87,7 @@ class ReportController extends Controller
             ->map(function ($customer) {
                 $customer->total_invoiced = $customer->total_invoiced ?? 0;
                 $customer->total_paid = $customer->total_paid ?? 0;
-                $customer->total_due = $customer->total_due ?? 0;
+                $customer->total_due = ($customer->total_due ?? 0) + $customer->opening_balance;
 
                 return $customer;
             });
@@ -103,12 +104,20 @@ class ReportController extends Controller
         [$from, $to] = $this->dateRange($request);
 
         $totalSales = Invoice::whereBetween('invoice_date', [$from, $to])->sum('total');
+
+        $costOfGoodsSold = (float) InvoiceItem::query()
+            ->join('invoices', 'invoices.id', '=', 'invoice_items.invoice_id')
+            ->join('products', 'products.id', '=', 'invoice_items.product_id')
+            ->whereBetween('invoices.invoice_date', [$from, $to])
+            ->selectRaw('SUM(invoice_items.quantity * products.cost_price) as cogs')
+            ->value('cogs') ?? 0;
+
         $expenses = Expense::whereBetween('expense_date', [$from, $to])->get();
         $totalExpenses = $expenses->sum('amount');
         $expensesByCategory = $expenses->groupBy('category')->map(fn ($items) => $items->sum('amount'));
-        $netProfit = $totalSales - $totalExpenses;
+        $netProfit = $totalSales - $costOfGoodsSold - $totalExpenses;
 
-        return view('reports.profit-loss', compact('from', 'to', 'totalSales', 'totalExpenses', 'expensesByCategory', 'netProfit'));
+        return view('reports.profit-loss', compact('from', 'to', 'totalSales', 'costOfGoodsSold', 'totalExpenses', 'expensesByCategory', 'netProfit'));
     }
 
     public function exportSales(Request $request)

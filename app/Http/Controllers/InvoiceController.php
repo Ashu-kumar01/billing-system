@@ -83,14 +83,19 @@ class InvoiceController extends Controller
             $paymentStatus = $dueAmount <= 0 ? 'paid' : ($paidAmount > 0 ? 'partial' : 'due');
 
             $invoicePrefix = Setting::get('invoice_prefix', 'INV-');
-            $nextNumber = str_pad((string) (Invoice::count() + 1), 5, '0', STR_PAD_LEFT);
+            $nextNumber = Invoice::count() + 1;
+            $invoiceNo = $invoicePrefix.str_pad((string) $nextNumber, 5, '0', STR_PAD_LEFT);
+            while (Invoice::where('invoice_no', $invoiceNo)->exists()) {
+                $nextNumber++;
+                $invoiceNo = $invoicePrefix.str_pad((string) $nextNumber, 5, '0', STR_PAD_LEFT);
+            }
 
             $invoice = Invoice::create([
                 'customer_id' => $data['customer_id'] ?? null,
                 'store_id' => $storeId,
                 'counter_id' => $counter?->id,
                 'user_id' => auth()->id(),
-                'invoice_no' => $invoicePrefix.$nextNumber,
+                'invoice_no' => $invoiceNo,
                 'invoice_date' => $data['invoice_date'],
                 'subtotal' => $subtotal,
                 'discount' => $totalDiscount,
@@ -107,8 +112,9 @@ class InvoiceController extends Controller
 
                 $product = Product::find($line['product_id']);
                 $stockBefore = $product->stock;
-                $stockAfter = $stockBefore - $line['quantity'];
-                $product->update(['stock' => max($stockAfter, 0)]);
+                $stockAfter = max($stockBefore - $line['quantity'], 0);
+                $actualChange = $stockAfter - $stockBefore;
+                $product->update(['stock' => $stockAfter]);
 
                 StockMovement::create([
                     'product_id' => $product->id,
@@ -116,9 +122,9 @@ class InvoiceController extends Controller
                     'user_id' => auth()->id(),
                     'type' => 'sale',
                     'quantity' => $line['quantity'],
-                    'quantity_change' => -$line['quantity'],
+                    'quantity_change' => $actualChange,
                     'stock_before' => $stockBefore,
-                    'stock_after' => max($stockAfter, 0),
+                    'stock_after' => $stockAfter,
                     'reference_id' => $invoice->id,
                     'reference_type' => Invoice::class,
                 ]);
@@ -127,8 +133,9 @@ class InvoiceController extends Controller
                     ['product_id' => $product->id, 'store_id' => $storeId],
                     ['quantity' => 0, 'reserved_quantity' => 0, 'available_quantity' => 0]
                 );
-                $productStock->increment('quantity', -$line['quantity']);
-                $productStock->increment('available_quantity', -$line['quantity']);
+                $productStock->quantity = max(0, $productStock->quantity + $actualChange);
+                $productStock->available_quantity = max(0, $productStock->available_quantity + $actualChange);
+                $productStock->save();
             }
 
             if ($paidAmount > 0) {
@@ -196,6 +203,16 @@ class InvoiceController extends Controller
                             'reference_type' => Invoice::class,
                             'note' => 'Reversed due to invoice deletion',
                         ]);
+
+                        $productStock = ProductStock::where('product_id', $product->id)
+                            ->where('store_id', $storeId)
+                            ->first();
+
+                        if ($productStock) {
+                            $productStock->quantity += $item->quantity;
+                            $productStock->available_quantity += $item->quantity;
+                            $productStock->save();
+                        }
                     }
                 }
 
